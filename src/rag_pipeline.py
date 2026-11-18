@@ -1,17 +1,7 @@
-
-import os
-
-from dotenv import load_dotenv
 from google import genai
 from google.genai.errors import APIError
 
-
-# Load environment variables
-load_dotenv()
-
-API_KEY = os.getenv("GEMINI_API_KEY")
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
-
+from src.config import API_KEY, MODEL
 
 def answer_medical_question(question, vector_store, top_k=3):
     """
