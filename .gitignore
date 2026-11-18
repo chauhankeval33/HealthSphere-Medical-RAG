@@ -1,0 +1,26 @@
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Virtual environments
+.venv/
+.venv314/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Generated vector database
+vector_db/
+
+# IDE and editor files
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
