@@ -5,7 +5,8 @@ def split_text_into_chunks(
     overlap=150
 ):
     """
-    Split text into chunks while preserving complete lines.
+    Split text into chunks while preserving complete lines
+    whenever possible.
 
     Chunk size and overlap are measured in characters.
     """
@@ -14,7 +15,9 @@ def split_text_into_chunks(
         return []
 
     if chunk_size <= 0:
-        raise ValueError("chunk_size must be greater than zero.")
+        raise ValueError(
+            "chunk_size must be greater than zero."
+        )
 
     if overlap < 0 or overlap >= chunk_size:
         raise ValueError(
@@ -33,11 +36,30 @@ def split_text_into_chunks(
 
     for line in lines:
 
+        # Handle a line longer than the chunk size.
+        if len(line) > chunk_size:
+
+            # Save any existing chunk first.
+            if current_lines:
+                chunks.append("\n".join(current_lines))
+                current_lines = []
+                current_length = 0
+
+            # Split the unusually long line into smaller pieces.
+            for start in range(0, len(line), chunk_size):
+                chunks.append(
+                    line[start:start + chunk_size]
+                )
+
+            continue
+
         line_length = len(line)
 
-        # If adding a line exceeds the chunk size,
-        # save the current chunk first.
-        if current_lines and current_length + line_length + 1 > chunk_size:
+        # Check whether adding the next line exceeds chunk size.
+        if (
+            current_lines
+            and current_length + line_length + 1 > chunk_size
+        ):
 
             chunks.append("\n".join(current_lines))
 
@@ -56,8 +78,10 @@ def split_text_into_chunks(
                 overlap_length += required_length
 
             current_lines = overlap_lines
+
             current_length = sum(
-                len(item) + 1 for item in current_lines
+                len(item) + 1
+                for item in current_lines
             )
 
         current_lines.append(line)
@@ -77,7 +101,13 @@ def chunk_medical_pages(
 ):
     """
     Split processed medical pages into chunks.
-    Preserve page numbers and chunk metadata.
+
+    Preserve:
+    - Global page number
+    - Original source page number
+    - Source filename
+    - Extraction method
+    - Chunk ID and index
     """
 
     all_chunks = []
@@ -86,7 +116,7 @@ def chunk_medical_pages(
     for page in pages:
 
         page_chunks = split_text_into_chunks(
-            page["text"],
+            page.get("text", ""),
             chunk_size=chunk_size,
             overlap=overlap
         )
@@ -98,6 +128,21 @@ def chunk_medical_pages(
                 "chunk_id": chunk_id,
 
                 "page_number": page["page_number"],
+
+                "source_page_number": page.get(
+                    "source_page_number",
+                    page["page_number"]
+                ),
+
+                "source_file": page.get(
+                    "source_file",
+                    "Unknown document"
+                ),
+
+                "extraction_method": page.get(
+                    "extraction_method",
+                    "Unknown"
+                ),
 
                 "chunk_index": index,
 

@@ -28,19 +28,22 @@ class MedicalVectorStore:
     def build_index(self, chunks):
         """
         Generate embeddings and build a FAISS index.
+        Preserves all chunk metadata.
         """
 
         if not chunks:
             raise ValueError("No chunks provided.")
 
-        # Remove empty chunks while preserving metadata.
         valid_chunks = []
 
         for chunk in chunks:
 
+            if not isinstance(chunk, dict):
+                continue
+
             text = chunk.get("text", "")
 
-            if text and text.strip():
+            if isinstance(text, str) and text.strip():
 
                 valid_chunks.append({
                     **chunk,
@@ -48,7 +51,7 @@ class MedicalVectorStore:
                 })
 
         if not valid_chunks:
-            raise ValueError("All provided chunks are empty.")
+            raise ValueError("All provided chunks are empty or invalid.")
 
         texts = [
             chunk["text"]
@@ -69,17 +72,19 @@ class MedicalVectorStore:
             dtype=np.float32
         )
 
-        # Create FAISS index using inner product.
+        if embeddings.ndim != 2 or embeddings.shape[0] != len(valid_chunks):
+            raise ValueError("Invalid embedding output.")
+
         embedding_dimension = embeddings.shape[1]
 
+        # Normalized embeddings + inner product = cosine similarity.
         self.index = faiss.IndexFlatIP(
             embedding_dimension
         )
 
-        # Add vectors to the index.
         self.index.add(embeddings)
 
-        # Keep metadata in the same order as FAISS vectors.
+        # Maintain exact correspondence with FAISS vector positions.
         self.chunks = valid_chunks
 
         print("FAISS index created successfully!")
@@ -88,13 +93,14 @@ class MedicalVectorStore:
 
     def save(self, directory="vector_db"):
         """
-        Save FAISS index and corresponding metadata.
+        Save FAISS index and corresponding chunk metadata.
         """
 
         if self.index is None:
             raise ValueError("Build the index before saving.")
 
         directory = Path(directory)
+
         directory.mkdir(
             parents=True,
             exist_ok=True
@@ -103,13 +109,11 @@ class MedicalVectorStore:
         index_path = directory / "medical.index"
         metadata_path = directory / "metadata.json"
 
-        # Save numerical vectors.
         faiss.write_index(
             self.index,
             str(index_path)
         )
 
-        # Save original text and page metadata.
         metadata = {
             "model_name": self.model_name,
             "chunks": self.chunks
@@ -150,12 +154,6 @@ class MedicalVectorStore:
                 f"Metadata file not found: {metadata_path}"
             )
 
-        # Load FAISS index.
-        self.index = faiss.read_index(
-            str(index_path)
-        )
-
-        # Load metadata.
         with open(
             metadata_path,
             "r",
@@ -164,18 +162,31 @@ class MedicalVectorStore:
 
             metadata = json.load(file)
 
-        if metadata["model_name"] != self.model_name:
+        if metadata.get("model_name") != self.model_name:
             raise ValueError(
                 "Embedding model mismatch. "
                 "Use the same model that created this index."
             )
 
-        self.chunks = metadata["chunks"]
+        loaded_chunks = metadata.get("chunks", [])
 
-        if self.index.ntotal != len(self.chunks):
+        if not isinstance(loaded_chunks, list):
+            raise ValueError("Invalid chunk metadata.")
+
+        loaded_index = faiss.read_index(
+            str(index_path)
+        )
+
+        if loaded_index.ntotal != len(loaded_chunks):
             raise ValueError(
                 "FAISS index and metadata have different sizes."
             )
+
+        if loaded_index.ntotal == 0:
+            raise ValueError("The loaded FAISS index is empty.")
+
+        self.index = loaded_index
+        self.chunks = loaded_chunks
 
         print("Vector database loaded successfully!")
 
@@ -192,10 +203,12 @@ class MedicalVectorStore:
         if not query or not query.strip():
             raise ValueError("Search query cannot be empty.")
 
-        if top_k <= 0:
-            raise ValueError("top_k must be greater than zero.")
+        if not isinstance(top_k, int) or top_k <= 0:
+            raise ValueError("top_k must be a positive integer.")
 
-        # Convert user question into an embedding.
+        if self.index.ntotal == 0:
+            raise ValueError("The vector database is empty.")
+
         query_embedding = self.model.encode(
             [query],
             normalize_embeddings=True,
@@ -207,7 +220,6 @@ class MedicalVectorStore:
             dtype=np.float32
         )
 
-        # Search FAISS index.
         actual_top_k = min(
             top_k,
             self.index.ntotal
@@ -231,11 +243,8 @@ class MedicalVectorStore:
             chunk = self.chunks[int(index_position)]
 
             results.append({
-
                 **chunk,
-
                 "similarity_score": float(score)
-
             })
 
         return results

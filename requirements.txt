@@ -2,7 +2,10 @@
 streamlit
 python-dotenv
 google-genai
-pymupdf
+pypdf
+opencv-python-headless
+pytesseract
+Pillow
 sentence-transformers
 faiss-cpu
 numpy

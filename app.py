@@ -2,25 +2,17 @@
 import hashlib
 import streamlit as st
 
-from src.document_loader import (
-    extract_text_from_pdf,
-    get_full_text
-)
-
+from src.document_processor import process_uploaded_documents
 from src.medical_summary import generate_medical_summary
-
 from src.text_preprocessor import preprocess_medical_pages
-
 from src.text_chunker import chunk_medical_pages
-
 from src.vector_store import MedicalVectorStore
-
 from src.rag_pipeline import answer_medical_question
 
 
-# --------------------------------
+# ==========================================
 # PAGE CONFIGURATION
-# --------------------------------
+# ==========================================
 
 st.set_page_config(
     page_title="HealthSphere Medical AI",
@@ -29,167 +21,471 @@ st.set_page_config(
 )
 
 
-# --------------------------------
+# ==========================================
 # APPLICATION HEADER
-# --------------------------------
+# ==========================================
 
 st.title("HealthSphere")
 
 st.subheader("Medical Document AI Assistant")
 
 st.write(
-    "Upload your medical report, understand its contents, "
-    "and ask questions using AI-powered document processing."
+    "Upload your medical report as a PDF or image, "
+    "capture it using your camera, review extracted text, "
+    "and ask questions using AI."
+)
+
+st.info(
+    "Upload fictional or de-identified reports during testing. "
+    "Review extracted medical values carefully before using AI."
 )
 
 
-# --------------------------------
-# INITIALIZE SESSION STATE
-# --------------------------------
+# ==========================================
+# SESSION STATE INITIALIZATION
+# ==========================================
 
 if "chat_history" not in st.session_state:
     st.session_state["chat_history"] = []
 
 
-# --------------------------------
-# PDF UPLOAD
-# --------------------------------
+def clear_document_state():
+    """
+    Clear previously processed document data.
+    """
 
-uploaded_file = st.file_uploader(
-    "Upload your medical PDF",
-    type=["pdf"],
-    help="Upload a PDF medical report."
+    keys_to_clear = [
+        "extracted_pages",
+        "processing_details",
+        "processed_pages",
+        "full_text",
+        "medical_summary",
+        "chunks",
+        "vector_store",
+        "document_ready",
+        "document_hash",
+        "review_complete"
+    ]
+
+    for key in keys_to_clear:
+        st.session_state.pop(key, None)
+
+    # Remove previous OCR review widget values.
+    for key in list(st.session_state.keys()):
+        if key.startswith("review_text_"):
+            st.session_state.pop(key, None)
+
+    st.session_state["chat_history"] = []
+
+
+# ==========================================
+# DOCUMENT UPLOAD
+# ==========================================
+
+st.divider()
+
+st.header("Upload Medical Report")
+
+uploaded_files = st.file_uploader(
+    "Upload PDF or medical report images",
+    type=["pdf", "jpg", "jpeg", "png"],
+    accept_multiple_files=True,
+    help="You can upload multiple PDFs or images. "
+         "Maximum size: 10 MB per file."
+)
+
+camera_file = st.camera_input(
+    "Or capture your medical report using your camera"
 )
 
 
-# --------------------------------
-# DETECT NEW DOCUMENT
-# --------------------------------
+# ==========================================
+# DOCUMENT HASH / CHANGE DETECTION
+# ==========================================
 
-if uploaded_file is not None:
+def calculate_document_hash(files, camera):
+    """
+    Generate a unique hash for all uploaded documents.
+    """
 
-    uploaded_bytes = uploaded_file.getvalue()
+    hasher = hashlib.sha256()
 
-    document_hash = hashlib.sha256(
-        uploaded_bytes
-    ).hexdigest()
+    for file in files:
 
-    # Reset previous document data when a new PDF is uploaded
-    if st.session_state.get("document_hash") != document_hash:
+        hasher.update(file.name.encode("utf-8"))
+        hasher.update(file.getvalue())
 
-        keys_to_clear = [
-            "extracted_pages",
-            "full_text",
-            "medical_summary",
-            "processed_pages",
-            "chunks",
-            "vector_store",
-            "chat_history"
-        ]
+    if camera is not None:
 
-        for key in keys_to_clear:
-            st.session_state.pop(key, None)
+        hasher.update(b"camera_capture")
+        hasher.update(camera.getvalue())
 
-        st.session_state["document_hash"] = document_hash
-        st.session_state["chat_history"] = []
+    return hasher.hexdigest()
 
-    st.success(
-        f"Uploaded successfully: {uploaded_file.name}"
+
+has_documents = bool(uploaded_files) or camera_file is not None
+
+if has_documents:
+
+    current_hash = calculate_document_hash(
+        uploaded_files,
+        camera_file
     )
 
+    if st.session_state.get("document_hash") != current_hash:
 
-# --------------------------------
-# DOCUMENT PROCESSING
-# --------------------------------
+        clear_document_state()
 
-if uploaded_file is not None:
+        st.session_state["document_hash"] = current_hash
 
-    if st.button("Process Medical Document", type="primary"):
+else:
 
-        if uploaded_file.size > 10 * 1024 * 1024:
+    if st.session_state.get("document_hash") is not None:
+        clear_document_state()
 
-            st.error("File size must be below 10 MB.")
+
+# ==========================================
+# DISPLAY UPLOADED FILES
+# ==========================================
+
+if has_documents:
+
+    st.subheader("Selected Documents")
+
+    for file in uploaded_files:
+
+        file_size_mb = file.size / (1024 * 1024)
+
+        st.write(
+            f"📄 **{file.name}** — {file_size_mb:.2f} MB"
+        )
+
+        # Preview uploaded images.
+        extension = file.name.lower()
+
+        if extension.endswith((".jpg", ".jpeg", ".png")):
+
+            with st.expander(f"Preview: {file.name}"):
+
+                st.image(
+                    file.getvalue(),
+                    caption=file.name,
+                    use_container_width=True
+                )
+
+    if camera_file is not None:
+
+        st.write("📷 **Camera capture selected**")
+
+        st.image(
+            camera_file.getvalue(),
+            caption="Captured medical report",
+            use_container_width=True
+        )
+
+
+# ==========================================
+# STEP 1: EXTRACT DOCUMENT TEXT
+# ==========================================
+
+if has_documents:
+
+    if st.button(
+        "1. Extract Document Text",
+        type="primary"
+    ):
+
+        # Validate individual file sizes.
+        oversized_files = [
+            file.name
+            for file in uploaded_files
+            if file.size > 10 * 1024 * 1024
+        ]
+
+        if camera_file is not None and camera_file.size > 10 * 1024 * 1024:
+            oversized_files.append("Camera capture")
+
+        if oversized_files:
+
+            st.error(
+                "The following files exceed the 10 MB limit: "
+                + ", ".join(oversized_files)
+            )
 
         else:
 
             try:
 
-                with st.spinner("Processing medical document..."):
+                with st.spinner(
+                    "Extracting text from your medical documents..."
+                ):
 
-                    # Step 1: Extract PDF text
-                    extracted_pages = extract_text_from_pdf(
-                        uploaded_file
+                    extracted_pages, processing_details = (
+                        process_uploaded_documents(
+                            uploaded_files=uploaded_files,
+                            camera_file=camera_file
+                        )
                     )
 
-                    # Step 2: Preprocess extracted pages
-                    processed_pages = preprocess_medical_pages(
-                        extracted_pages
-                    )
-
-                    # Step 3: Combine cleaned text
-                    full_text = get_full_text(
-                        processed_pages
-                    )
-
-                    if not full_text.strip():
-
-                        st.warning(
-                            "No readable text found. "
-                            "This PDF may be scanned. "
-                            "OCR support will be added later."
+                    if not extracted_pages:
+                        raise ValueError(
+                            "No document pages were extracted."
                         )
 
-                    else:
+                    st.session_state["extracted_pages"] = extracted_pages
 
-                        # Step 4: Generate chunks
-                        chunks = chunk_medical_pages(
-                            processed_pages,
-                            chunk_size=1000,
-                            overlap=150
-                        )
+                    st.session_state["processing_details"] = (
+                        processing_details
+                    )
 
-                        if not chunks:
+                    st.session_state["review_complete"] = False
 
-                            st.error(
-                                "Unable to generate document chunks."
-                            )
+                    st.success(
+                        "Document extraction completed!"
+                    )
 
-                        else:
-
-                            # Step 5: Generate embeddings and build FAISS
-                            vector_store = MedicalVectorStore()
-
-                            total_vectors = vector_store.build_index(
-                                chunks
-                            )
-
-                            # Step 6: Save everything in session state
-                            st.session_state["extracted_pages"] = extracted_pages
-                            st.session_state["processed_pages"] = processed_pages
-                            st.session_state["full_text"] = full_text
-                            st.session_state["chunks"] = chunks
-                            st.session_state["vector_store"] = vector_store
-
-                            st.success(
-                                "Medical document processed successfully!"
-                            )
-
-                            st.success(
-                                f"Generated {total_vectors} searchable vectors."
-                            )
-
-            except Exception as e:
+            except Exception as error:
 
                 st.error(
-                    f"Document processing failed: {str(e)}"
+                    f"Document extraction failed: {error}"
                 )
 
 
-# --------------------------------
-# DISPLAY DOCUMENT INFORMATION
-# --------------------------------
+# ==========================================
+# DISPLAY EXTRACTION RESULTS AND WARNINGS
+# ==========================================
 
-if "processed_pages" in st.session_state:
+if "extracted_pages" in st.session_state:
+
+    st.divider()
+
+    st.header("Document Extraction Results")
+
+    extracted_pages = st.session_state["extracted_pages"]
+
+    processing_details = st.session_state["processing_details"]
+
+    col1, col2 = st.columns(2)
+
+    col1.metric(
+        "Extracted Pages",
+        len(extracted_pages)
+    )
+
+    col2.metric(
+        "Processed Files",
+        len(processing_details)
+    )
+
+    st.subheader("Processing Information")
+
+    for detail in processing_details:
+
+        with st.expander(
+            f"{detail['filename']} — {detail['type']}"
+        ):
+
+            st.write(
+                f"Pages processed: {detail['pages']}"
+            )
+
+            if "ocr_confidence" in detail:
+
+                st.metric(
+                    "Average OCR Confidence",
+                    f"{detail['ocr_confidence']:.2f}%"
+                )
+
+            quality = detail.get("quality")
+
+            if quality:
+
+                st.write(
+                    f"Image resolution: "
+                    f"{quality['width']} × {quality['height']}"
+                )
+
+                st.write(
+                    f"Blur score: {quality['blur_score']}"
+                )
+
+                st.write(
+                    f"Brightness: {quality['brightness']}"
+                )
+
+            warnings = detail.get("warnings", [])
+
+            if warnings:
+
+                for warning in warnings:
+                    st.warning(warning)
+
+            else:
+
+                st.success(
+                    "No extraction or image-quality warnings."
+                )
+
+
+# ==========================================
+# STEP 2: REVIEW AND EDIT EXTRACTED TEXT
+# ==========================================
+
+if "extracted_pages" in st.session_state:
+
+    st.divider()
+
+    st.header("Review Extracted Medical Text")
+
+    st.write(
+        "Review the extracted text against your original report. "
+        "You can manually correct OCR recognition errors before "
+        "building the AI search system."
+    )
+
+    edited_pages = []
+
+    for index, page in enumerate(
+        st.session_state["extracted_pages"]
+    ):
+
+        source_file = page.get(
+            "source_file",
+            "Unknown document"
+        )
+
+        source_page = page.get(
+            "source_page_number",
+            page["page_number"]
+        )
+
+        extraction_method = page.get(
+            "extraction_method",
+            "Unknown"
+        )
+
+        st.subheader(
+            f"Page {page['page_number']}"
+        )
+
+        st.caption(
+            f"Source: {source_file} | "
+            f"Original page: {source_page} | "
+            f"Method: {extraction_method}"
+        )
+
+        edited_text = st.text_area(
+            f"Review or correct extracted text — Page {page['page_number']}",
+            value=page.get("text", ""),
+            height=250,
+            key=f"review_text_{index}"
+        )
+
+        edited_page = page.copy()
+
+        edited_page["text"] = edited_text
+
+        edited_pages.append(edited_page)
+
+    st.divider()
+
+    if st.button(
+        "2. Build AI Search System",
+        type="primary"
+    ):
+
+        try:
+
+            with st.spinner(
+                "Preprocessing text and building the medical AI search system..."
+            ):
+
+                # Step 1: Use reviewed text.
+                processed_pages = preprocess_medical_pages(
+                    edited_pages
+                )
+
+                # Step 2: Combine page text.
+                text_parts = []
+
+                for page in processed_pages:
+
+                    if page["text"].strip():
+
+                        text_parts.append(
+                            f"Page {page['page_number']}\n"
+                            f"{page['text']}"
+                        )
+
+                full_text = "\n\n".join(text_parts).strip()
+
+                if not full_text:
+
+                    raise ValueError(
+                        "No readable text is available. "
+                        "Please review the extracted pages."
+                    )
+
+                # Step 3: Generate chunks.
+                chunks = chunk_medical_pages(
+                    processed_pages,
+                    chunk_size=1000,
+                    overlap=150
+                )
+
+                if not chunks:
+
+                    raise ValueError(
+                        "Unable to generate document chunks."
+                    )
+
+                # Step 4: Build FAISS vector store.
+                vector_store = MedicalVectorStore()
+
+                total_vectors = vector_store.build_index(
+                    chunks
+                )
+
+                # Step 5: Save processed data.
+                st.session_state["processed_pages"] = processed_pages
+
+                st.session_state["full_text"] = full_text
+
+                st.session_state["chunks"] = chunks
+
+                st.session_state["vector_store"] = vector_store
+
+                st.session_state["document_ready"] = True
+
+                st.session_state["review_complete"] = True
+
+                st.session_state["chat_history"] = []
+
+                st.session_state.pop(
+                    "medical_summary",
+                    None
+                )
+
+                st.success(
+                    "Medical AI search system created successfully!"
+                )
+
+                st.success(
+                    f"Generated {total_vectors} searchable vectors."
+                )
+
+        except Exception as error:
+
+            st.error(
+                f"AI search system creation failed: {error}"
+            )
+
+
+# ==========================================
+# STEP 3: DOCUMENT INFORMATION
+# ==========================================
+
+if st.session_state.get("document_ready"):
 
     processed_pages = st.session_state["processed_pages"]
 
@@ -218,40 +514,42 @@ if "processed_pages" in st.session_state:
         len(chunks)
     )
 
-    # Display extracted content
-    st.subheader("Extracted Medical Report")
+    st.subheader("Processed Medical Report")
 
     for page in processed_pages:
 
         with st.expander(
-            f"Page {page['page_number']}"
+            f"Page {page['page_number']} — "
+            f"{page.get('source_file', 'Unknown document')}"
         ):
 
             st.text(
-                page["text"] or "No text found on this page."
+                page["text"] or "No text found."
             )
 
     with st.expander("View Complete Extracted Text"):
 
         st.text_area(
-            "Document Content",
+            "Complete Medical Report",
             full_text,
-            height=300
+            height=300,
+            disabled=True
         )
 
 
-# --------------------------------
-# AI MEDICAL REPORT SUMMARIZATION
-# --------------------------------
+# ==========================================
+# STEP 4: AI MEDICAL REPORT SUMMARIZATION
+# ==========================================
 
-if "full_text" in st.session_state:
+if st.session_state.get("document_ready"):
 
     st.divider()
 
     st.header("AI Medical Report Explanation")
 
     st.write(
-        "Generate a simple explanation of your uploaded medical report."
+        "Generate a simple explanation of your uploaded "
+        "medical report."
     )
 
     if st.button("Generate Medical Summary"):
@@ -276,10 +574,10 @@ if "full_text" in st.session_state:
                         "Gemini AI returned an empty summary."
                     )
 
-        except Exception as e:
+        except Exception as error:
 
             st.error(
-                f"Summary generation failed: {str(e)}"
+                f"Summary generation failed: {error}"
             )
 
     if "medical_summary" in st.session_state:
@@ -291,11 +589,11 @@ if "full_text" in st.session_state:
         )
 
 
-# --------------------------------
-# MEDICAL DOCUMENT RAG CHAT
-# --------------------------------
+# ==========================================
+# STEP 5: MEDICAL DOCUMENT RAG CHAT
+# ==========================================
 
-if "vector_store" in st.session_state:
+if st.session_state.get("document_ready"):
 
     st.divider()
 
@@ -303,49 +601,54 @@ if "vector_store" in st.session_state:
 
     st.write(
         "Ask questions about the information contained "
-        "in your uploaded medical document."
+        "in your uploaded medical documents."
     )
 
-    # Display previous chat messages
+    # Display previous messages.
     for message in st.session_state["chat_history"]:
 
         with st.chat_message(message["role"]):
 
             st.markdown(message["content"])
 
-            # Display sources for assistant responses
-            if message["role"] == "assistant" and "sources" in message:
+            if (
+                message["role"] == "assistant"
+                and "sources" in message
+            ):
 
                 with st.expander("View Source References"):
 
                     for source in message["sources"]:
 
                         st.markdown(
-                            f"**Page:** {source['page_number']} "
-                            f"| **Chunk:** {source['chunk_id']} "
+                            f"**File:** {source.get('source_file', 'Unknown document')} "
+                            f"| **Original Page:** "
+                            f"{source.get('source_page_number', source.get('page_number', 'Unknown'))} "
+                            f"| **Method:** "
+                            f"{source.get('extraction_method', 'Unknown')} "
+                            f"| **Chunk:** {source.get('chunk_id')} "
                             f"| **Similarity:** "
-                            f"{source['similarity_score']:.4f}"
+                            f"{source.get('similarity_score', 0):.4f}"
                         )
 
                         st.text(source["text"])
 
-    # Chat input
+    # Chat input.
     user_question = st.chat_input(
         "Ask something about your medical report..."
     )
 
     if user_question:
 
-        # Display and store user question
         st.session_state["chat_history"].append({
             "role": "user",
             "content": user_question
         })
 
         with st.chat_message("user"):
+
             st.markdown(user_question)
 
-        # Generate RAG answer
         try:
 
             with st.chat_message("assistant"):
@@ -369,58 +672,55 @@ if "vector_store" in st.session_state:
                         for source in result["sources"]:
 
                             st.markdown(
-                                f"**Page:** {source['page_number']} "
-                                f"| **Chunk:** {source['chunk_id']} "
+                                f"**File:** {source.get('source_file', 'Unknown document')} "
+                                f"| **Original Page:** "
+                                f"{source.get('source_page_number', source.get('page_number', 'Unknown'))} "
+                                f"| **Method:** "
+                                f"{source.get('extraction_method', 'Unknown')} "
+                                f"| **Chunk:** {source.get('chunk_id')} "
                                 f"| **Similarity:** "
-                                f"{source['similarity_score']:.4f}"
+                                f"{source.get('similarity_score', 0):.4f}"
                             )
 
                             st.text(source["text"])
 
-                    # Save assistant response
                     st.session_state["chat_history"].append({
                         "role": "assistant",
                         "content": answer,
                         "sources": result["sources"]
                     })
 
-        except RuntimeError as e:
+        except (RuntimeError, ValueError) as error:
 
-            st.warning(str(e))
-
-            st.session_state["chat_history"].append({
-                "role": "assistant",
-                "content": f"⚠️ {str(e)}"
-            })
-
-        except ValueError as e:
-
-            st.warning(str(e))
+            st.warning(str(error))
 
             st.session_state["chat_history"].append({
                 "role": "assistant",
-                "content": f"⚠️ {str(e)}"
+                "content": f"⚠️ {str(error)}"
             })
 
-        except Exception as e:
+        except Exception as error:
 
             st.error(
                 "An unexpected error occurred while "
                 "generating your answer. Please try again."
             )
 
-            print(f"RAG Error: {type(e).__name__}: {e}")
+            print(
+                f"RAG Error: {type(error).__name__}: {error}"
+            )
 
 
-# --------------------------------
+# ==========================================
 # MEDICAL DISCLAIMER
-# --------------------------------
+# ==========================================
 
 st.divider()
 
 st.caption(
     "HealthSphere provides AI-generated explanations of uploaded "
     "documents for educational purposes only. It does not provide "
-    "medical diagnosis or treatment. Consult a qualified healthcare "
-    "professional for clinical interpretation."
+    "medical diagnosis or treatment. OCR and AI-generated content "
+    "may contain errors. Always verify medical values against the "
+    "original report and consult a qualified healthcare professional."
 )

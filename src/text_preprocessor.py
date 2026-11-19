@@ -3,7 +3,6 @@ import re
 
 
 def clean_medical_text(text):
-
     """
     Clean extracted medical report text.
 
@@ -31,12 +30,9 @@ def clean_medical_text(text):
     ]
 
     # 4. Remove unnecessary empty lines
-    cleaned_lines = []
-
-    for line in lines:
-
-        if line:
-            cleaned_lines.append(line)
+    cleaned_lines = [
+        line for line in lines if line
+    ]
 
     # 5. Reconstruct cleaned text
     cleaned_text = "\n".join(cleaned_lines)
@@ -52,10 +48,11 @@ def clean_medical_text(text):
 
 
 def preprocess_medical_pages(pages):
-
     """
     Clean extracted text page by page.
-    Preserve page numbers for future RAG citations.
+
+    Preserve all original page metadata,
+    including source file and extraction method.
     """
 
     processed_pages = []
@@ -63,15 +60,15 @@ def preprocess_medical_pages(pages):
     for page in pages:
 
         cleaned_text = clean_medical_text(
-            page["text"]
+            page.get("text", "")
         )
 
-        processed_pages.append({
+        # Preserve all original metadata
+        processed_page = page.copy()
 
-            "page_number": page["page_number"],
+        # Replace only the text with cleaned text
+        processed_page["text"] = cleaned_text
 
-            "text": cleaned_text
-
-        })
+        processed_pages.append(processed_page)
 
     return processed_pages
