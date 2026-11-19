@@ -31,8 +31,7 @@ st.subheader("Medical Document AI Assistant")
 
 st.write(
     "Upload your medical report as a PDF or image, "
-    "capture it using your camera, review extracted text, "
-    "and ask questions using AI."
+    "review extracted text, and ask questions using AI."
 )
 
 st.info(
@@ -90,12 +89,10 @@ uploaded_files = st.file_uploader(
     "Upload PDF or medical report images",
     type=["pdf", "jpg", "jpeg", "png"],
     accept_multiple_files=True,
-    help="You can upload multiple PDFs or images. "
-         "Maximum size: 10 MB per file."
-)
-
-camera_file = st.camera_input(
-    "Or capture your medical report using your camera"
+    help=(
+        "You can upload multiple PDFs or images. "
+        "Maximum size: 10 MB per file."
+    )
 )
 
 
@@ -103,34 +100,26 @@ camera_file = st.camera_input(
 # DOCUMENT HASH / CHANGE DETECTION
 # ==========================================
 
-def calculate_document_hash(files, camera):
+def calculate_document_hash(files):
     """
     Generate a unique hash for all uploaded documents.
     """
 
     hasher = hashlib.sha256()
 
-    for file in files:
+    for file in files or []:
 
         hasher.update(file.name.encode("utf-8"))
         hasher.update(file.getvalue())
 
-    if camera is not None:
-
-        hasher.update(b"camera_capture")
-        hasher.update(camera.getvalue())
-
     return hasher.hexdigest()
 
 
-has_documents = bool(uploaded_files) or camera_file is not None
+has_documents = bool(uploaded_files)
 
 if has_documents:
 
-    current_hash = calculate_document_hash(
-        uploaded_files,
-        camera_file
-    )
+    current_hash = calculate_document_hash(uploaded_files)
 
     if st.session_state.get("document_hash") != current_hash:
 
@@ -173,16 +162,6 @@ if has_documents:
                     use_container_width=True
                 )
 
-    if camera_file is not None:
-
-        st.write("📷 **Camera capture selected**")
-
-        st.image(
-            camera_file.getvalue(),
-            caption="Captured medical report",
-            use_container_width=True
-        )
-
 
 # ==========================================
 # STEP 1: EXTRACT DOCUMENT TEXT
@@ -202,9 +181,6 @@ if has_documents:
             if file.size > 10 * 1024 * 1024
         ]
 
-        if camera_file is not None and camera_file.size > 10 * 1024 * 1024:
-            oversized_files.append("Camera capture")
-
         if oversized_files:
 
             st.error(
@@ -222,8 +198,7 @@ if has_documents:
 
                     extracted_pages, processing_details = (
                         process_uploaded_documents(
-                            uploaded_files=uploaded_files,
-                            camera_file=camera_file
+                            uploaded_files=uploaded_files
                         )
                     )
 

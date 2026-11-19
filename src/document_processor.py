@@ -16,21 +16,18 @@ def get_ocr_warnings(confidence, extracted_text):
     warnings = []
 
     if not extracted_text.strip():
-
         warnings.append(
             "No readable text was detected. "
             "Try uploading a clearer image."
         )
 
     elif confidence < 50:
-
         warnings.append(
             "Low OCR confidence. Extracted text may contain "
             "significant recognition errors. Review carefully."
         )
 
     elif confidence < 70:
-
         warnings.append(
             "Moderate OCR confidence. Review extracted text "
             "carefully against the original report."
@@ -39,14 +36,13 @@ def get_ocr_warnings(confidence, extracted_text):
     return warnings
 
 
-def process_uploaded_documents(uploaded_files, camera_file=None):
+def process_uploaded_documents(uploaded_files):
     """
     Process uploaded PDFs and medical report images.
 
     Supports:
     - PDF files
     - JPG / JPEG / PNG images
-    - Streamlit camera captures
     - Multiple uploaded files
 
     Returns:
@@ -57,28 +53,20 @@ def process_uploaded_documents(uploaded_files, camera_file=None):
             Extraction, OCR and image-quality information.
     """
 
+    if not uploaded_files:
+        raise ValueError("Please upload a medical document.")
+
     extracted_pages = []
     processing_details = []
 
-    files_to_process = [
-        (uploaded_file, False)
-        for uploaded_file in (uploaded_files or [])
-    ]
-
-    if camera_file is not None:
-        files_to_process.append((camera_file, True))
-
-    if not files_to_process:
-        raise ValueError("Please upload a medical document.")
-
     current_page = 1
 
-    for uploaded_file, is_camera in files_to_process:
+    for uploaded_file in uploaded_files:
 
         filename = getattr(
             uploaded_file,
             "name",
-            "camera_capture.png"
+            "uploaded_document"
         )
 
         filename_lower = filename.lower()
@@ -89,7 +77,7 @@ def process_uploaded_documents(uploaded_files, camera_file=None):
             # PDF PROCESSING
             # ========================================
 
-            if not is_camera and filename_lower.endswith(".pdf"):
+            if filename_lower.endswith(".pdf"):
 
                 pdf_pages = extract_pdf_pages(uploaded_file)
 
@@ -105,22 +93,14 @@ def process_uploaded_documents(uploaded_files, camera_file=None):
                     page_text = page["text"].strip()
 
                     extracted_pages.append({
-
-                        # Global page number for this combined report
                         "page_number": current_page,
-
-                        # Original page number within the PDF
                         "source_page_number": page["page_number"],
-
                         "text": page_text,
-
                         "source_file": filename,
-
                         "extraction_method": "PDF"
                     })
 
                     if not page_text:
-
                         file_warnings.append(
                             f"Page {page['page_number']} contains "
                             "no extractable text. It may be a scanned page."
@@ -139,25 +119,22 @@ def process_uploaded_documents(uploaded_files, camera_file=None):
             # IMAGE PROCESSING
             # ========================================
 
-            elif (
-                is_camera
-                or filename_lower.endswith(SUPPORTED_IMAGE_FORMATS)
-            ):
+            elif filename_lower.endswith(SUPPORTED_IMAGE_FORMATS):
 
-                # Load image once
+                # Load image once.
                 image = load_medical_image(uploaded_file)
 
-                # Assess image quality
+                # Assess image quality.
                 quality = assess_image_quality(image)
 
-                # Extract OCR text from the already loaded image
+                # Extract OCR text from the loaded image.
                 ocr_result = extract_text_from_image(image)
 
                 confidence = ocr_result["average_confidence"]
 
                 extracted_text = ocr_result["text"]
 
-                # Combine quality and OCR warnings
+                # Combine image-quality and OCR warnings.
                 warnings = list(quality["warnings"])
 
                 warnings.extend(
@@ -168,30 +145,19 @@ def process_uploaded_documents(uploaded_files, camera_file=None):
                 )
 
                 extracted_pages.append({
-
                     "page_number": current_page,
-
                     "source_page_number": 1,
-
                     "text": extracted_text,
-
                     "source_file": filename,
-
                     "extraction_method": "OCR"
                 })
 
                 processing_details.append({
-
                     "filename": filename,
-
-                    "type": "Camera" if is_camera else "Image",
-
+                    "type": "Image",
                     "pages": 1,
-
                     "ocr_confidence": confidence,
-
                     "quality": quality,
-
                     "warnings": warnings
                 })
 
