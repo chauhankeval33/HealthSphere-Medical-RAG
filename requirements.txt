@@ -9,3 +9,4 @@ Pillow
 sentence-transformers
 faiss-cpu
 numpy
+supabase
